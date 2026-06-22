@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="xposed_description">Seedum（芝麻派）电报授权绕过模块。自动拦截授权检查，无需电报验证即可使用全部功能。</string>
+</resources>

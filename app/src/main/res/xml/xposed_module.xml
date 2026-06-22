@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<xposed>
+    <module package="io.github.lazyimmortal.bypass" />
+    <description>
+        Seedum（芝麻派）电报授权绕过模块。
+        自动拦截授权检查，无需电报验证即可使用全部功能。
+        兼容 LSPosed / EdXposed / Xposed 框架。
+        作用域：io.github.lazyimmortal.seedum
+    </description>
+</xposed>

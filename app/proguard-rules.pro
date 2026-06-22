@@ -1,0 +1,2 @@
+-keep class io.github.lazyimmortal.bypass.** { *; }
+-keep class de.robv.android.xposed.** { *; }
