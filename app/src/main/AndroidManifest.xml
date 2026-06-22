@@ -4,17 +4,29 @@
 
     <application
         android:label="Seedum授权绕过"
-        android:theme="@android:style/Theme.DeviceDefault.Dialog">
+        android:theme="@android:style/Theme.Material.NoActionBar">
 
         <meta-data
             android:name="xposedmodule"
             android:value="true" />
         <meta-data
+            android:name="xposeddescription"
+            android:value="Seedum（芝麻派）电报授权绕过模块，自动拦截授权检查，无需电报验证即可使用。" />
+        <meta-data
             android:name="xposedminversion"
-            android:value="89" />
+            android:value="93" />
         <meta-data
             android:name="xposedscope"
             android:resource="@array/xposed_scope" />
+
+        <!-- LSPosed 需要至少一个 Activity 才能识别模块 -->
+        <activity
+            android:name="io.github.lazyimmortal.bypass.MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+            </intent-filter>
+        </activity>
 
     </application>
 </manifest>

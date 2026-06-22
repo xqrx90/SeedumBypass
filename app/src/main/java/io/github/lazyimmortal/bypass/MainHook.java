@@ -18,6 +18,15 @@ import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.Set;
 
+/**
+ * Seedum（芝麻派）电报授权自动绕过模块
+ *
+ * 绕过策略（多重保险）：
+ * 1. Hook SharedPreferences.getBoolean("isActivated") -> true
+ * 2. 自动在文件系统写入 isActivated=true
+ * 3. 拦截 Telegram API 网络请求
+ * 4. Hook 本地校验函数 checkUiAuthNative
+ */
 public class MainHook implements IXposedHookLoadPackage {
 
     private static final String TAG = "SeedumBypass";
@@ -25,9 +34,12 @@ public class MainHook implements IXposedHookLoadPackage {
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        if (!lpparam.packageName.equals(PACKAGE_NAME)) return;
+        if (!lpparam.packageName.equals(PACKAGE_NAME)) {
+            return;
+        }
 
         XposedBridge.log(TAG + " 模块已加载到 " + PACKAGE_NAME);
+        XposedBridge.log(TAG + " version = 1.0");
 
         hookSharedPreferences(lpparam);
         autoWriteAuthConfig(lpparam);
@@ -36,8 +48,12 @@ public class MainHook implements IXposedHookLoadPackage {
         scanAndHookAuthMethods(lpparam);
     }
 
+    /**
+     * 方案一：Hook SharedPreferences，拦截 isActivated
+     */
     private void hookSharedPreferences(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
+            // 拦截 SharedPreferencesImpl.getBoolean
             Class<?> spClass = lpparam.classLoader.loadClass("android.app.SharedPreferencesImpl");
             XposedHelpers.findAndHookMethod(spClass, "getBoolean",
                 String.class, boolean.class,
@@ -57,6 +73,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             );
 
+            // 拦截 Context.getSharedPreferences，返回代理
             XposedHelpers.findAndHookMethod("android.content.ContextWrapper",
                 lpparam.classLoader, "getSharedPreferences",
                 String.class, int.class,
@@ -79,10 +96,15 @@ public class MainHook implements IXposedHookLoadPackage {
         }
     }
 
+    /**
+     * SharedPreferences 代理：拦截授权相关键
+     */
     private static class ProxyPreferences implements SharedPreferences {
         private final SharedPreferences original;
 
-        ProxyPreferences(SharedPreferences original) { this.original = original; }
+        ProxyPreferences(SharedPreferences original) {
+            this.original = original;
+        }
 
         @Override public boolean getBoolean(String key, boolean defValue) {
             if ("isActivated".equals(key) || "activated".equals(key)
@@ -96,9 +118,7 @@ public class MainHook implements IXposedHookLoadPackage {
         @Override public long getLong(String key, long defValue) { return original.getLong(key, defValue); }
         @Override public float getFloat(String key, float defValue) { return original.getFloat(key, defValue); }
         @Override public String getString(String key, String defValue) { return original.getString(key, defValue); }
-        @Override public Set<String> getStringSet(String key, Set<String> defValues) { return original.getStringSet(key, defValues); }
         @Override public boolean contains(String key) { return original.contains(key); }
-        @Override public Map<String, ?> getAll() { return original.getAll(); }
         @Override public Editor edit() {
             Editor editor = original.edit();
             editor.putBoolean("isActivated", true);
@@ -106,8 +126,13 @@ public class MainHook implements IXposedHookLoadPackage {
         }
         @Override public void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) { original.registerOnSharedPreferenceChangeListener(l); }
         @Override public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) { original.unregisterOnSharedPreferenceChangeListener(l); }
+        @Override public Map<String, ?> getAll() { return original.getAll(); }
+        @Override public Set<String> getStringSet(String key, Set<String> defValues) { return original.getStringSet(key, defValues); }
     }
 
+    /**
+     * 方案二：自动写入授权配置文件
+     */
     private void autoWriteAuthConfig(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             XposedHelpers.findAndHookMethod("android.app.Application",
@@ -118,6 +143,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         try {
                             Context ctx = (Context) param.thisObject;
 
+                            // 写入 SharedPreferences
                             ctx.getSharedPreferences("io.github.lazyimmortal.seedum_preferences",
                                 Context.MODE_PRIVATE).edit()
                                 .putBoolean("isActivated", true)
@@ -125,15 +151,20 @@ public class MainHook implements IXposedHookLoadPackage {
                                 .putString("telegramBotToken", "bypassed")
                                 .apply();
 
+                            // 写入 config.json
                             File dataDir = ctx.getFilesDir();
                             File[] configFiles = {
                                 new File(dataDir, "config.json"),
                                 new File(dataDir, "global_config.json"),
                                 new File(dataDir.getParentFile(), "shared_prefs/modulePrefs.xml")
                             };
+
                             for (File f : configFiles) {
-                                if (f.exists()) injectActivated(f);
+                                if (f.exists()) {
+                                    injectActivated(f);
+                                }
                             }
+
                             XposedBridge.log(TAG + " 授权配置已写入");
                         } catch (Exception e) {
                             XposedBridge.log(TAG + " 写入授权失败: " + e.getMessage());
@@ -166,6 +197,9 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Exception ignored) {}
     }
 
+    /**
+     * 方案三：拦截 Telegram API 请求
+     */
     private void hookTelegramBot(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> builderClass = lpparam.classLoader.loadClass("okhttp3.Request$Builder");
@@ -176,15 +210,21 @@ public class MainHook implements IXposedHookLoadPackage {
                         String url = (String) param.args[0];
                         if (url != null && (url.contains("api.telegram.org")
                             || url.contains("wxpusher.zjiecode.com"))) {
-                            XposedBridge.log(TAG + " 拦截 TG 请求");
+                            XposedBridge.log(TAG + " 拦截 TG/WxPusher 请求: " + url.substring(0, Math.min(60, url.length())));
                             param.args[0] = "http://127.0.0.1/blocked";
                         }
                     }
                 }
             );
-        } catch (Exception ignored) {}
+            XposedBridge.log(TAG + " Telegram 请求拦截已安装");
+        } catch (Exception e) {
+            XposedBridge.log(TAG + " TG 拦截失败(可能无OkHttp): " + e.getMessage());
+        }
     }
 
+    /**
+     * 方案四：Hook 本地校验函数
+     */
     private void hookNativeCheck(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             XposedHelpers.findAndHookMethod("android.app.ActivityThread",
@@ -193,13 +233,19 @@ public class MainHook implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
+                        // 延迟 hook：等应用完全初始化后再扫描
                         new Thread(() -> {
-                            try { Thread.sleep(3000); scanForNativeAuth(lpparam.classLoader); } catch (Exception ignored) {}
+                            try {
+                                Thread.sleep(3000);
+                                scanForNativeAuth(lpparam.classLoader);
+                            } catch (Exception ignored) {}
                         }).start();
                     }
                 }
             );
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            XposedBridge.log(TAG + " native hook 失败: " + e.getMessage());
+        }
     }
 
     private void scanForNativeAuth(ClassLoader cl) {
@@ -207,18 +253,26 @@ public class MainHook implements IXposedHookLoadPackage {
             Method getLoadedClasses = ClassLoader.class.getDeclaredMethod("getLoadedClasses");
             getLoadedClasses.setAccessible(true);
             Class<?>[] classes = (Class<?>[]) getLoadedClasses.invoke(cl);
+
             for (Class<?> c : classes) {
                 String name = c.getName();
-                if (name.startsWith("android.") || name.startsWith("java.") || name.startsWith("kotlin.")) continue;
+                if (name.startsWith("android.") || name.startsWith("java.")
+                    || name.startsWith("kotlin.") || name.startsWith("okhttp3.")) {
+                    continue;
+                }
                 for (Method m : c.getDeclaredMethods()) {
                     String mn = m.getName().toLowerCase();
-                    if ((mn.contains("activated") || mn.contains("auth") || mn.equals("checkuiauthnative"))
-                        && m.getReturnType() == boolean.class && m.getParameterCount() <= 1) {
-                        hookMethodReturnTrue(c, m.getName(), cl);
+                    if (mn.contains("activated") || mn.contains("auth")
+                        || mn.equals("checkuiauthnative")) {
+                        if (m.getReturnType() == boolean.class && m.getParameterCount() <= 1) {
+                            hookMethodReturnTrue(c, m.getName(), cl);
+                        }
                     }
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            XposedBridge.log(TAG + " 扫描类失败: " + e.getMessage());
+        }
     }
 
     private void hookMethodReturnTrue(Class<?> clazz, String methodName, ClassLoader cl) {
@@ -229,7 +283,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     protected void afterHookedMethod(MethodHookParam param) {
                         if (param.getResult() instanceof Boolean && !(boolean) param.getResult()) {
                             param.setResult(true);
-                            XposedBridge.log(TAG + " 绕过: " + clazz.getSimpleName() + "." + methodName);
+                            XposedBridge.log(TAG + " 自动绕过: " + clazz.getSimpleName() + "." + methodName);
                         }
                     }
                 }
@@ -239,7 +293,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void scanAndHookAuthMethods(XC_LoadPackage.LoadPackageParam lpparam) {
         new Thread(() -> {
-            try { Thread.sleep(5000); scanForNativeAuth(lpparam.classLoader); } catch (Exception ignored) {}
+            try {
+                Thread.sleep(5000);
+                scanForNativeAuth(lpparam.classLoader);
+            } catch (Exception ignored) {}
         }).start();
     }
 }
