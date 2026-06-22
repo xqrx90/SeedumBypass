@@ -5,7 +5,6 @@ pluginManagement {
         mavenCentral()
     }
 }
-
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
@@ -14,6 +13,5 @@ dependencyResolutionManagement {
         maven { url = uri("https://api.xposed.info/") }
     }
 }
-
-rootProject.name = "SeedumAuthBypass"
+rootProject.name = "SeedumBypass"
 include(":app")
