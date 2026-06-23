@@ -1,56 +1,45 @@
 package io.github.lazyimmortal.bypass;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
+import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XC_MethodReplacement;
-import de.robv.android.xposed.XSharedPreferences;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
-import java.util.Set;
 
 public class MainHook implements IXposedHookLoadPackage {
 
-    // 芝麻派的包名
     private static final String TARGET_PACKAGE = "io.github.lazyimmortal.seedum";
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        // 只作用于芝麻派
         if (!TARGET_PACKAGE.equals(lpparam.packageName)) {
             return;
         }
 
-        XposedBridge.log("✅ SeedumBypass: 开始注入 " + lpparam.packageName);
+        XposedBridge.log("SeedumBypass: 开始注入 " + lpparam.packageName);
 
-        // ===== 方案1：Hook 常见授权检查方法，强制返回 true =====
+        // 方案1：Hook 授权检查方法 → 直接 return true
         hookAuthMethods(lpparam);
 
-        // ===== 方案2：拦截 SharedPreferences，篡改授权标记 =====
+        // 方案2：拦截 SharedPreferences → after 阶段篡改返回值
         hookSharedPreferences(lpparam);
 
-        // ===== 方案3：拦截 Toast，屏蔽"未授权"提示 =====
+        // 方案3：拦截 Toast → after 阶段替换为空 Toast
         hookToast(lpparam);
 
-        XposedBridge.log("✅ SeedumBypass: 注入完成");
+        XposedBridge.log("SeedumBypass: 注入完成");
     }
 
     /**
-     * 方案1：Hook 可能的授权检查方法
+     * 方案1：Hook 可能的授权检查方法，强制返回 true
      */
     private void hookAuthMethods(XC_LoadPackage.LoadPackageParam lpparam) {
         String[] authMethods = {
-            "isAuthorized",
-            "checkAuth",
-            "verifyTelegram",
-            "isTelegramVerified",
-            "checkTelegramAuth",
-            "isAuth",
-            "hasAuth",
-            "isValid",
-            "checkValid",
-            "verifyAuth",
-            "isVerified",
-            "checkLicense",
+            "isAuthorized", "checkAuth", "verifyTelegram",
+            "isTelegramVerified", "checkTelegramAuth",
+            "isAuth", "hasAuth", "isValid", "checkValid",
+            "verifyAuth", "isVerified", "checkLicense",
             "verifyLicense"
         };
 
@@ -71,12 +60,11 @@ public class MainHook implements IXposedHookLoadPackage {
         for (String className : possibleClasses) {
             try {
                 Class<?> clazz = XposedHelpers.findClass(className, lpparam.classLoader);
-                XposedBridge.log("✅ SeedumBypass: 找到类 " + className);
                 for (String methodName : authMethods) {
                     try {
                         XposedHelpers.findAndHookMethod(clazz, methodName,
                                 XC_MethodReplacement.returnConstant(true));
-                        XposedBridge.log("✅ Hooked: " + className + "." + methodName);
+                        XposedBridge.log("SeedumBypass: Hooked " + className + "." + methodName);
                     } catch (Throwable ignored) {}
                 }
             } catch (Throwable ignored) {}
@@ -84,88 +72,90 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /**
-     * 方案2：拦截 SharedPreferences，把所有授权相关键值对篡改成已授权
+     * 方案2：用 XC_MethodHook 拦截 SharedPreferencesImpl.getBoolean/getString
+     * 在 afterHookedMethod 里判断 key 名，匹配则篡改结果，否则保持原样
      */
     private void hookSharedPreferences(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            Class<?> spClass = XposedHelpers.findClass("android.app.SharedPreferencesImpl", lpparam.classLoader);
+            Class<?> spClass = XposedHelpers.findClass(
+                    "android.app.SharedPreferencesImpl", lpparam.classLoader);
 
-            // 拦截 getBoolean，如果键名包含 auth/verify/telegram/license 等关键字的，返回 true
+            // Hook getBoolean(String key, boolean defValue)
             XposedHelpers.findAndHookMethod(spClass, "getBoolean",
                     String.class, boolean.class,
-                    new XC_MethodReplacement() {
+                    new XC_MethodHook() {
                         @Override
-                        protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             String key = (String) param.args[0];
-                            if (key != null) {
-                                String lowerKey = key.toLowerCase();
-                                if (lowerKey.contains("auth")
-                                        || lowerKey.contains("verify")
-                                        || lowerKey.contains("telegram")
-                                        || lowerKey.contains("license")
-                                        || lowerKey.contains("valid")
-                                        || lowerKey.contains("authorized")) {
-                                    XposedBridge.log("✅ SeedumBypass: 篡改 SharedPreferences " + key + " → true");
-                                    return true;
-                                }
+                            if (key != null && matchKey(key)) {
+                                param.setResult(true);
+                                XposedBridge.log("SeedumBypass: SP[" + key + "] -> true");
                             }
-                            return XposedHelpers.callOriginalMethod(param.method, param.thisObject, param.args);
                         }
                     });
 
-            // 拦截 getString，如果值看起来是授权令牌，返回假令牌
+            // Hook getString(String key, String defValue)
             XposedHelpers.findAndHookMethod(spClass, "getString",
                     String.class, String.class,
-                    new XC_MethodReplacement() {
+                    new XC_MethodHook() {
                         @Override
-                        protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             String key = (String) param.args[0];
-                            if (key != null) {
-                                String lowerKey = key.toLowerCase();
-                                if (lowerKey.contains("auth")
-                                        || lowerKey.contains("token")
-                                        || lowerKey.contains("telegram")
-                                        || lowerKey.contains("license")) {
-                                    XposedBridge.log("✅ SeedumBypass: 篡改 SharedPreferences " + key + " → bypass_token");
-                                    return "bypass_token_placeholder";
-                                }
+                            if (key != null && matchKey(key)) {
+                                param.setResult("bypass_token_placeholder");
+                                XposedBridge.log("SeedumBypass: SP[" + key + "] -> bypass_token");
                             }
-                            return XposedHelpers.callOriginalMethod(param.method, param.thisObject, param.args);
                         }
                     });
 
-            XposedBridge.log("✅ SeedumBypass: SharedPreferences Hook 已启用");
+            XposedBridge.log("SeedumBypass: SharedPreferences Hook 已启用");
         } catch (Throwable t) {
-            XposedBridge.log("❌ SeedumBypass: SharedPreferences Hook 失败: " + t.getMessage());
+            XposedBridge.log("SeedumBypass: SP Hook 失败: " + t.getMessage());
         }
     }
 
     /**
-     * 方案3：拦截 Toast，屏蔽"未授权"提示
+     * 方案3：用 XC_MethodHook 拦截 Toast.makeText
+     * 匹配到"未授权"等关键词就替换为空 Toast
      */
     private void hookToast(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            Class<?> toastClass = XposedHelpers.findClass("android.widget.Toast", lpparam.classLoader);
+            Class<?> toastClass = XposedHelpers.findClass(
+                    "android.widget.Toast", lpparam.classLoader);
             XposedHelpers.findAndHookMethod(toastClass, "makeText",
                     android.content.Context.class,
                     CharSequence.class,
                     int.class,
-                    new XC_MethodReplacement() {
+                    new XC_MethodHook() {
                         @Override
-                        protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             String text = param.args[1].toString();
                             if (text.contains("授权") || text.contains("电报")
-                                    || text.contains("Telegram") || text.contains("未授权")
-                                    || text.contains("unauthorized") || text.contains("verify")) {
-                                XposedBridge.log("✅ SeedumBypass: 屏蔽 Toast: " + text);
-                                // 返回一个空的 Toast，不显示
-                                android.widget.Toast toast = new android.widget.Toast((android.content.Context) param.args[0]);
-                                toast.setDuration(0);
-                                return toast;
+                                    || text.contains("Telegram")
+                                    || text.contains("未授权")
+                                    || text.contains("unauthorized")) {
+                                android.widget.Toast emptyToast =
+                                        new android.widget.Toast(
+                                                (android.content.Context) param.args[0]);
+                                emptyToast.setDuration(0);
+                                param.setResult(emptyToast);
+                                XposedBridge.log("SeedumBypass: 屏蔽Toast -> " + text);
                             }
-                            return XposedHelpers.callOriginalMethod(param.method, param.thisObject, param.args);
                         }
                     });
         } catch (Throwable ignored) {}
+    }
+
+    /** 判断 key 是否属于授权相关的字段名 */
+    private boolean matchKey(String key) {
+        if (key == null) return false;
+        String lower = key.toLowerCase();
+        return lower.contains("auth")
+                || lower.contains("verify")
+                || lower.contains("telegram")
+                || lower.contains("license")
+                || lower.contains("valid")
+                || lower.contains("authorized")
+                || lower.contains("token");
     }
 }
