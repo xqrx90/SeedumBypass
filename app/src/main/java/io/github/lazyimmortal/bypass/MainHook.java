@@ -15,43 +15,61 @@ public class MainHook implements IXposedHookLoadPackage {
     private static final String TARGET_PACKAGE = "io.github.lazyimmortal.seedum";
     private static final String LOG_FILE = "/sdcard/SeedumBypass.log";
 
-    private void log(String msg) {
+    /** 写日志到文件 + logcat */
+    private static void log(String msg) {
         XposedBridge.log("SeedumBypass: " + msg);
         writeFile(msg);
     }
 
-    private void writeFile(String msg) {
+    /** 追加写入 /sdcard/SeedumBypass.log */
+    private static void writeFile(String msg) {
         try {
             File f = new File(LOG_FILE);
-            if (f.length() > 2 * 1024 * 1024) f.delete();
+            // 文件超过 2MB 就清空重写
+            if (f.length() > 2 * 1024 * 1024) {
+                f.delete();
+            }
             FileWriter fw = new FileWriter(f, true);
-            fw.write(new SimpleDateFormat("HH:mm:ss").format(new Date()) + " " + msg + "\n");
+            String time = new SimpleDateFormat("HH:mm:ss.SSS").format(new Date());
+            fw.write(time + "  " + msg + "\n");
             fw.close();
         } catch (Throwable ignored) {}
     }
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        if (!TARGET_PACKAGE.equals(lpparam.packageName)) return;
+        if (!TARGET_PACKAGE.equals(lpparam.packageName)) {
+            return;
+        }
 
+        // 每次注入都清空旧日志
         new File(LOG_FILE).delete();
-        log("========== 开始注入 ==========");
+        log("======= 开始注入 =======");
 
-        // 核心：Hook Toast，打印完整堆栈找到授权检查位置
-        hookToastStackTrace(lpparam);
+        // 方案1：Hook Toast（很多 APP 用这个）
+        hookToast(lpparam);
 
-        // 备用：Hook 几个最可能的关键类（即使混淆也试试）
-        hookLikelyClasses(lpparam);
+        // 方案2：Hook Snackbar（Material Design 常用）
+        hookSnackbar(lpparam);
 
-        log("========== 注入完成 ==========");
+        // 方案3：Hook TextView.setText（直接显示文字）
+        hookTextView(lpparam);
+
+        // 方案4：Hook Dialog / AlertDialog（弹窗提示）
+        hookDialog(lpparam);
+
+        // 方案5：Hook 所有 Activity 的 onCreate，看是哪个 Activity 在显示授权提示
+        hookAllActivities(lpparam);
+
+        log("======= 注入完成 =======");
+        log("如果打开芝麻派后日志没有新增内容，说明 Hook 没命中。");
+        log("请尝试操作芝麻派，然后下拉刷新 MT 管理器里的 SeedumBypass.log");
     }
 
     /**
-     * Hook Toast.makeText
-     * 当"账号未授权"出现时，打印【完整】调用堆栈（不过滤）
-     * 堆栈里会显示是芝麻派的哪个方法调用的 Toast
+     * 方案1：Hook Toast.makeText
      */
-    private void hookToastStackTrace(XC_LoadPackage.LoadPackageParam lpparam) {
+    private void hookToast(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> toastClass = XposedHelpers.findClass("android.widget.Toast", lpparam.classLoader);
             XposedHelpers.findAndHookMethod(toastClass, "makeText",
@@ -62,48 +80,134 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                             String text = param.args[1].toString();
-                            if (text.contains("授权") || text.contains("电报")
-                                    || text.contains("Telegram") || text.contains("未授权")
-                                    || text.contains("unauthorized") || text.contains("验证")) {
-
-                                log("========== 🔍 发现授权提示 ==========");
-                                log("[TOAST] 内容: " + text);
-                                log("[STACK] 调用堆栈（从下往上看）:");
-
-                                // 打印完整堆栈，不过滤
-                                StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-                                for (StackTraceElement ste : stack) {
-                                    String line = "  at " + ste.getClassName()
-                                            + "." + ste.getMethodName()
-                                            + "(" + ste.getFileName() + ":"
-                                            + ste.getLineNumber() + ")";
-                                    log(line);
-                                }
-                                log("========== 🔍 堆栈结束 ==========");
+                            log("[TOAST] 内容: " + text);
+                            // 打印调用堆栈（找是谁调用的）
+                            StringBuilder sb = new StringBuilder("[TOAST] 调用堆栈:\n");
+                            for (StackTraceElement ste : Thread.currentThread().getStackTrace()) {
+                                sb.append("    at ").append(ste.getClassName())
+                                  .append(".").append(ste.getMethodName())
+                                  .append("(").append(ste.getFileName()).append(":")
+                                  .append(ste.getLineNumber()).append(")\n");
                             }
+                            log(sb.toString());
                         }
                     });
-            log("✅ Toast堆栈追踪已启用");
+            log("✅ Toast Hook 已启用");
         } catch (Throwable t) {
             log("❌ Toast Hook 失败: " + t.getMessage());
         }
     }
 
     /**
-     * 尝试 Hook 几个最可能的关键类
-     * 即使混淆，也试试这些常见命名
+     * 方案2：Hook Snackbar（Android 官方推荐替代 Toast）
      */
-    private void hookLikelyClasses(XC_LoadPackage.LoadPackageParam lpparam) {
-        // 混淆后的类我们猜不到，但可以尝试 Hook 所有 Activity 的 onCreate
-        // 看看能不能找到授权检查
+    private void hookSnackbar(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            // Hook Activity.onCreate，在 Activity 创建时打印日志
+            // Hook Snackbar.make()
+            Class<?> snackbarClass = XposedHelpers.findClass("com.google.android.material.snackbar.Snackbar", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(snackbarClass, "make",
+                    android.view.View.class, CharSequence.class, int.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            String text = param.args[1].toString();
+                            log("[SNACKBAR] 内容: " + text);
+                            log("[SNACKBAR] 调用堆栈:");
+                            for (StackTraceElement ste : Thread.currentThread().getStackTrace()) {
+                                log("    at " + ste.getClassName() + "." + ste.getMethodName());
+                            }
+                        }
+                    });
+            log("✅ Snackbar.make Hook 已启用");
+        } catch (Throwable t) {
+            // 可能没用 Material Design，忽略
+            log("ℹ️ Snackbar Hook 跳过（APK 可能不含 Material Design）");
+        }
+
+        // 也试试 AndroidX 的 Snackbar
+        try {
+            Class<?> snackbarClass2 = XposedHelpers.findClass("com.google.android.material.snackbar.BaseTransientBottomBar", lpparam.classLoader);
+            log("ℹ️ 找到 BaseTransientBottomBar，但暂不 Hook");
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * 方案3：Hook TextView.setText（直接设置文字）
+     */
+    private void hookTextView(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> tvClass = XposedHelpers.findClass("android.widget.TextView", lpparam.classLoader);
+            // Hook setText(CharSequence)
+            XposedHelpers.findAndHookMethod(tvClass, "setText",
+                    CharSequence.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            String text = param.args[0].toString();
+                            if (text.contains("授权") || text.contains("电报")
+                                    || text.contains("Telegram") || text.contains("未授权")
+                                    || text.contains("unauthorized") || text.contains("验证")) {
+                                log("[TEXTVIEW] 设置文字: " + text);
+                                log("[TEXTVIEW] 调用堆栈:");
+                                for (StackTraceElement ste : Thread.currentThread().getStackTrace()) {
+                                    String cn = ste.getClassName();
+                                    if (cn.contains("io.github.lazyimmortal.seedum") || cn.contains("seedum")) {
+                                        log("    at " + cn + "." + ste.getMethodName());
+                                    }
+                                }
+                            }
+                        }
+                    });
+            log("✅ TextView.setText Hook 已启用");
+        } catch (Throwable t) {
+            log("❌ TextView Hook 失败: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 方案4：Hook Dialog / AlertDialog（弹窗提示）
+     */
+    private void hookDialog(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            Class<?> dialogClass = XposedHelpers.findClass("android.app.Dialog", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(dialogClass, "setTitle", CharSequence.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            log("[DIALOG] setTitle: " + param.args[0]);
+                        }
+                    });
+            log("✅ Dialog.setTitle Hook 已启用");
+        } catch (Throwable ignored) {}
+
+        try {
+            Class<?> alertDialogClass = XposedHelpers.findClass("android.app.AlertDialog", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(alertDialogClass, "setMessage", CharSequence.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            log("[ALERT] setMessage: " + param.args[0]);
+                            log("[ALERT] 调用堆栈:");
+                            for (StackTraceElement ste : Thread.currentThread().getStackTrace()) {
+                                log("    at " + ste.getClassName() + "." + ste.getMethodName());
+                            }
+                        }
+                    });
+            log("✅ AlertDialog.setMessage Hook 已启用");
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * 方案5：Hook 所有 Activity 的 onCreate，记录哪个 Activity 被创建
+     */
+    private void hookAllActivities(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
             Class<?> activityClass = XposedHelpers.findClass("android.app.Activity", lpparam.classLoader);
             XposedHelpers.findAndHookMethod(activityClass, "onCreate",
                     android.os.Bundle.class,
                     new XC_MethodHook() {
                         @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                             String className = param.thisObject.getClass().getName();
                             log("[ACTIVITY] 创建: " + className);
                         }
