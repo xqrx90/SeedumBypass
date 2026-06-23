@@ -7,138 +7,51 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 import java.io.File;
 import java.io.FileWriter;
-import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
-import java.lang.reflect.Method;
 
 public class MainHook implements IXposedHookLoadPackage {
 
     private static final String TARGET_PACKAGE = "io.github.lazyimmortal.seedum";
-    // 日志输出到手机存储根目录，用 MT 管理器直接打开
     private static final String LOG_FILE = "/sdcard/SeedumBypass.log";
 
-    /** 写日志到文件 + logcat */
-    private static void log(String msg) {
+    private void log(String msg) {
         XposedBridge.log("SeedumBypass: " + msg);
         writeFile(msg);
     }
 
-    /** 追加写入 /sdcard/SeedumBypass.log */
-    private static void writeFile(String msg) {
+    private void writeFile(String msg) {
         try {
             File f = new File(LOG_FILE);
-            // 文件超过 2MB 就清空重写
-            if (f.length() > 2 * 1024 * 1024) {
-                f.delete();
-            }
+            if (f.length() > 2 * 1024 * 1024) f.delete();
             FileWriter fw = new FileWriter(f, true);
-            String time = new SimpleDateFormat("HH:mm:ss").format(new Date());
-            fw.write(time + " " + msg + "\n");
+            fw.write(new SimpleDateFormat("HH:mm:ss").format(new Date()) + " " + msg + "\n");
             fw.close();
         } catch (Throwable ignored) {}
     }
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        if (!TARGET_PACKAGE.equals(lpparam.packageName)) {
-            return;
-        }
+        if (!TARGET_PACKAGE.equals(lpparam.packageName)) return;
 
-        // 清空旧日志（首次注入时）
         new File(LOG_FILE).delete();
         log("========== 开始注入 ==========");
 
-        hookAllBooleanMethods(lpparam);
-        hookToast(lpparam);
-        hookSharedPreferences(lpparam);
+        // 核心：Hook Toast，打印完整堆栈找到授权检查位置
+        hookToastStackTrace(lpparam);
+
+        // 备用：Hook 几个最可能的关键类（即使混淆也试试）
+        hookLikelyClasses(lpparam);
 
         log("========== 注入完成 ==========");
     }
 
     /**
-     * Hook 已知类的所有 boolean 方法（打日志 + 强制返回 true）
+     * Hook Toast.makeText
+     * 当"账号未授权"出现时，打印【完整】调用堆栈（不过滤）
+     * 堆栈里会显示是芝麻派的哪个方法调用的 Toast
      */
-    private void hookAllBooleanMethods(XC_LoadPackage.LoadPackageParam lpparam) {
-        String[] knownClasses = {
-            "io.github.lazyimmortal.seedum.util.AuthUtil",
-            "io.github.lazyimmortal.seedum.util.TelegramUtil",
-            "io.github.lazyimmortal.seedum.util.ConfigUtil",
-            "io.github.lazyimmortal.seedum.util.PrefUtil",
-            "io.github.lazyimmortal.seedum.util.ApiUtil",
-            "io.github.lazyimmortal.seedum.model.AuthModel",
-            "io.github.lazyimmortal.seedum.model.UserModel",
-            "io.github.lazyimmortal.seedum.model.ConfigModel",
-            "io.github.lazyimmortal.seedum.MainActivity",
-            "io.github.lazyimmortal.seedum.SplashActivity",
-            "io.github.lazyimmortal.seedum.StartActivity",
-            "io.github.lazyimmortal.seedum.LauncherActivity",
-            "io.github.lazyimmortal.seedum.ui.MainActivity",
-            "io.github.lazyimmortal.seedum.ui.SplashActivity",
-            "io.github.lazyimmortal.seedum.service.AuthService",
-        };
-
-        String[] authMethods = {
-            "isAuthorized", "checkAuth", "verifyTelegram",
-            "isTelegramVerified", "checkTelegramAuth",
-            "isAuth", "hasAuth", "isValid", "checkValid",
-            "verifyAuth", "isVerified", "checkLicense",
-            "verifyLicense", "isRegistered", "checkTelegramBind",
-            "getTelegramId", "hasTelegramAuth", "isTelegramAuth",
-            "checkAuth", "verifyAuth", "isAuthValid"
-        };
-
-        for (String className : knownClasses) {
-            try {
-                Class<?> clazz = XposedHelpers.findClass(className, lpparam.classLoader);
-
-                // Hook 所有返回 boolean 的方法（打日志）
-                Method[] methods = clazz.getDeclaredMethods();
-                for (Method m : methods) {
-                    if (m.getReturnType() == boolean.class || m.getReturnType() == Boolean.class) {
-                        String methodSig = className + "." + m.getName();
-                        XposedHelpers.findAndHookMethod(clazz, m.getName(),
-                                new XC_MethodHook() {
-                                    @Override
-                                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                                        boolean result = (boolean) param.getResult();
-                                        log("[BOOL] " + methodSig + "() -> " + result);
-                                    }
-                                });
-                    }
-                }
-                log("已Hook类: " + className);
-            } catch (Throwable ignored) {}
-        }
-
-        // 对常见授权方法强制返回 true（同时打日志）
-        for (String className : knownClasses) {
-            try {
-                Class<?> clazz = XposedHelpers.findClass(className, lpparam.classLoader);
-                for (String methodName : authMethods) {
-                    try {
-                        XposedHelpers.findAndHookMethod(clazz, methodName,
-                                new XC_MethodHook() {
-                                    @Override
-                                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                                        log("[CALL] " + className + "." + methodName + "() 被调用");
-                                    }
-                                    @Override
-                                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                                        log("[FORCE] " + className + "." + methodName + "() -> true (强制)");
-                                        param.setResult(true);
-                                    }
-                                });
-                    } catch (Throwable ignored) {}
-                }
-            } catch (Throwable ignored) {}
-        }
-    }
-
-    /**
-     * Hook Toast.makeText，完整记录所有提示内容
-     */
-    private void hookToast(XC_LoadPackage.LoadPackageParam lpparam) {
+    private void hookToastStackTrace(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             Class<?> toastClass = XposedHelpers.findClass("android.widget.Toast", lpparam.classLoader);
             XposedHelpers.findAndHookMethod(toastClass, "makeText",
@@ -149,59 +62,55 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                             String text = param.args[1].toString();
-                            log("[TOAST] " + text);
-                            // 不屏蔽，只记录
-                        }
-                    });
-        } catch (Throwable ignored) {}
-    }
+                            if (text.contains("授权") || text.contains("电报")
+                                    || text.contains("Telegram") || text.contains("未授权")
+                                    || text.contains("unauthorized") || text.contains("验证")) {
 
-    /**
-     * Hook SharedPreferences，篡改授权相关键值
-     */
-    private void hookSharedPreferences(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            Class<?> spClass = XposedHelpers.findClass(
-                    "android.app.SharedPreferencesImpl", lpparam.classLoader);
+                                log("========== 🔍 发现授权提示 ==========");
+                                log("[TOAST] 内容: " + text);
+                                log("[STACK] 调用堆栈（从下往上看）:");
 
-            XposedHelpers.findAndHookMethod(spClass, "getBoolean",
-                    String.class, boolean.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                            String key = (String) param.args[0];
-                            if (key != null && matchKey(key)) {
-                                boolean val = (boolean) param.getResult();
-                                log("[SP_BOOL] " + key + " = " + val + " -> 强制 true");
-                                param.setResult(true);
+                                // 打印完整堆栈，不过滤
+                                StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+                                for (StackTraceElement ste : stack) {
+                                    String line = "  at " + ste.getClassName()
+                                            + "." + ste.getMethodName()
+                                            + "(" + ste.getFileName() + ":"
+                                            + ste.getLineNumber() + ")";
+                                    log(line);
+                                }
+                                log("========== 🔍 堆栈结束 ==========");
                             }
                         }
                     });
-
-            XposedHelpers.findAndHookMethod(spClass, "getString",
-                    String.class, String.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                            String key = (String) param.args[0];
-                            if (key != null && matchKey(key)) {
-                                log("[SP_STR] " + key + " -> 强制 bypass_token");
-                                param.setResult("bypass_token_placeholder");
-                            }
-                        }
-                    });
-
+            log("✅ Toast堆栈追踪已启用");
         } catch (Throwable t) {
-            log("SP Hook 失败: " + t.getMessage());
+            log("❌ Toast Hook 失败: " + t.getMessage());
         }
     }
 
-    private boolean matchKey(String key) {
-        if (key == null) return false;
-        String lower = key.toLowerCase();
-        return lower.contains("auth") || lower.contains("verify")
-                || lower.contains("telegram") || lower.contains("license")
-                || lower.contains("valid") || lower.contains("token")
-                || lower.contains("registered") || lower.contains("bind");
+    /**
+     * 尝试 Hook 几个最可能的关键类
+     * 即使混淆，也试试这些常见命名
+     */
+    private void hookLikelyClasses(XC_LoadPackage.LoadPackageParam lpparam) {
+        // 混淆后的类我们猜不到，但可以尝试 Hook 所有 Activity 的 onCreate
+        // 看看能不能找到授权检查
+        try {
+            // Hook Activity.onCreate，在 Activity 创建时打印日志
+            Class<?> activityClass = XposedHelpers.findClass("android.app.Activity", lpparam.classLoader);
+            XposedHelpers.findAndHookMethod(activityClass, "onCreate",
+                    android.os.Bundle.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            String className = param.thisObject.getClass().getName();
+                            log("[ACTIVITY] 创建: " + className);
+                        }
+                    });
+            log("✅ Activity.onCreate Hook 已启用");
+        } catch (Throwable t) {
+            log("❌ Activity Hook 失败: " + t.getMessage());
+        }
     }
 }
