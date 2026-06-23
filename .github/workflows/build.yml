@@ -16,11 +16,37 @@ jobs:
         with:
           api-level: 30
           build-tools: 30.0.3
+
       - uses: gradle/gradle-build-action@v2
         with:
           gradle-version: 7.5
           arguments: assembleDebug
+
+      # 验证 meta-data 是否真的被打包进了 APK
+      - name: Verify Xposed metadata in APK
+        run: |
+          APK=$(find app/build/outputs/apk -name "*.apk" | head -1)
+          echo "=== Checking: $APK ==="
+          echo ""
+          echo ">>> Metdata search:"
+          $ANDROID_HOME/build-tools/30.0.3/aapt d badging "$APK" | grep -i xposed || echo "!!! xposedmodule NOT FOUND !!!"
+          echo ""
+          echo ">>> Full metadata:"
+          $ANDROID_HOME/build-tools/30.0.3/aapt d badging "$APK" | grep "meta-data" || echo "!!! NO meta-data at all !!!"
+          echo ""
+          echo ">>> Manifest dump:"
+          $ANDROID_HOME/build-tools/30.0.3/aapt d xmltree "$APK" AndroidManifest.xml | grep -A2 -B2 xposed || echo "!!! NOT IN XML !!!"
+          echo ""
+          $ANDROID_HOME/build-tools/30.0.3/aapt d xmltree "$APK" AndroidManifest.xml > manifest-dump.txt
+
+      - name: Upload Manifest Dump
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-dump
+          path: manifest-dump.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: SeedumBypass
-         
+          path: app/build/outputs/apk/debug/*.apk
